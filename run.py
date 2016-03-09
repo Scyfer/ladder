@@ -237,7 +237,7 @@ def setup_data(p, test_set=False):
     if p.get('unlabeled_samples') is not None:
         training_set_size = p.unlabeled_samples
 
-    train_set = dataset_class("train")
+    train_set = dataset_class(("train", ))
 
     # Make sure the MNIST data is in right format
     if p.dataset == 'mnist':
@@ -264,7 +264,7 @@ def setup_data(p, test_set=False):
 
     # Only touch test data if requested
     if test_set:
-        d.test = dataset_class("test")
+        d.test = dataset_class(("test",))
         d.test_ind = numpy.arange(d.test.num_examples)
 
     # Setup optional whitening, only used for Cifar-10
@@ -418,9 +418,11 @@ def train(cli_params):
     assert 'counter' in [u.name for u in bn_updates.keys()], \
         'No batch norm params in graph - the graph has been cut?'
 
+    step_rule = Adam(learning_rate=ladder.lr)
     training_algorithm = GradientDescent(
-        cost=ladder.costs.total, params=all_params,
-        step_rule=Adam(learning_rate=ladder.lr))
+        cost=ladder.costs.total,
+        parameters=all_params,
+        step_rule=step_rule)
     # In addition to actual training, also do BN variable approximations
     training_algorithm.add_updates(bn_updates)
 
@@ -494,7 +496,8 @@ def train(cli_params):
             SaveExpParams(p, p.save_dir, before_training=True),
             SaveLog(p.save_dir, after_training=True),
             ShortPrinting(short_prints),
-            LRDecay(ladder.lr, p.num_epochs * p.lrate_decay, p.num_epochs,
+            LRDecay(step_rule.learning_rate,
+                    p.num_epochs * p.lrate_decay, p.num_epochs,
                     after_epoch=True),
         ])
     main_loop.run()

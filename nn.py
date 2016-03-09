@@ -261,7 +261,7 @@ class LRDecay(SimpleExtension):
         self.decay_first = decay_first
         self.decay_last = decay_last
         self.lr = lr
-        self.lr_init = lr.get_value()
+        self.lr_init = lr
 
     def do(self, which_callback, *args):
         self.iter += 1
