@@ -104,3 +104,5 @@ tramp
 ########
 deployment-config.json
 .remote-sync.json
+
+results
