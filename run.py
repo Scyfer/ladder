@@ -1,18 +1,17 @@
 #!/usr/bin/env python
-
 import functools
 import logging
+import math
 import os
 import subprocess
+import sys
+import time
 from argparse import ArgumentParser, Action
 from collections import OrderedDict
-import sys
+from itertools import izip, product, tee
 
 import numpy
-import time
 import theano
-from theano.tensor.type import TensorType
-
 from blocks.algorithms import GradientDescent, Adam
 from blocks.extensions import FinishAfter
 from blocks.extensions.monitoring import TrainingDataMonitoring
@@ -21,17 +20,19 @@ from blocks.graph import ComputationGraph
 from blocks.main_loop import MainLoop
 from blocks.model import Model
 from blocks.roles import PARAMETER
+from picklable_itertools import cycle, imap
+from theano.tensor.type import TensorType
+
+from blocks_extras.extensions.predict import PredictDataStream
 from fuel.datasets import MNIST, CIFAR10
 from fuel.schemes import ShuffledScheme, SequentialScheme
 from fuel.streams import DataStream
 from fuel.transformers import Transformer
 
-from picklable_itertools import cycle, imap
-from itertools import izip, product, tee
-
 logger = logging.getLogger('main')
 
-from utils import ShortPrinting, prepare_dir, load_df, DummyLoop
+from utils import ShortPrinting, prepare_dir, load_df, DummyLoop, \
+    RebalanceUnlabeledDataStream
 from utils import SaveExpParams, SaveLog, SaveParams, AttributeDict
 from nn import ZCA, ContrastNorm
 from nn import ApproxTestMonitoring, FinalTestMonitoring, TestMonitoring
@@ -130,7 +131,8 @@ def unify_labels(y):
 def make_datastream(dataset, indices, batch_size,
                     n_labeled=None, n_unlabeled=None,
                     balanced_classes=True, whiten=None, cnorm=None,
-                    scheme=ShuffledScheme):
+                    scheme=ShuffledScheme,
+                    imbalance_unlabeled_data=False):
     if n_labeled is None or n_labeled == 0:
         n_labeled = len(indices)
     if batch_size is None:
@@ -155,8 +157,39 @@ def make_datastream(dataset, indices, batch_size,
     else:
         i_labeled = indices[:n_labeled]
 
-    # Get unlabeled indices
-    i_unlabeled = indices[:n_unlabeled]
+    if imbalance_unlabeled_data:
+        # introduce class imbalance in unlabeled data
+        logger.info('Imbalancing %d labels...' % n_unlabeled)
+        all_data = dataset.data_sources[dataset.sources.index('targets')]
+        y = unify_labels(all_data)[indices]
+        n_classes = y.max() + 1
+
+        n_samples_per_class = {
+            0: 0.25,
+            1: 0.25,
+        }
+        n_samples_other_classes = int(math.ceil(
+            (1 - sum(n_samples_per_class.values())) /
+            float(n_classes - len(n_samples_per_class)) *
+            n_unlabeled))
+
+        i_unlabeled = []
+        for c in range(n_classes):
+            # determine how many samples we pull for this class
+            if c in n_samples_per_class:
+                n_samples = int(math.ceil(n_samples_per_class[c]*n_unlabeled))
+            else:
+                n_samples = min(n_samples_other_classes,
+                                n_unlabeled - len(i_unlabeled))
+            print "Sampled {} unlabeled for class {}".format(n_samples, c)
+            i = (indices[y == c])[:n_samples]
+            i_unlabeled += list(i)
+    else:
+        # Get unlabeled indices
+        i_unlabeled = indices[:n_unlabeled]
+
+    # Note: it seems like some datapoints that occur in the 'labeled' set are
+    # also occurring in the unlabeled dataset!
 
     ds = SemiDataStream(
         data_stream_labeled=Whitening(
@@ -166,8 +199,9 @@ def make_datastream(dataset, indices, batch_size,
         data_stream_unlabeled=Whitening(
             DataStream(dataset),
             iteration_scheme=scheme(i_unlabeled, batch_size),
-            whiten=whiten, cnorm=cnorm)
+            whiten=whiten, cnorm=cnorm),
     )
+    ds.produces_examples = False
     return ds
 
 
@@ -443,15 +477,34 @@ def train(cli_params):
         ]),
     }
 
-    main_loop = MainLoop(
-        training_algorithm,
-        # Datastream used for training
+    # initial scheme is sequentialscheme, this will be altered by our extension
+    train_data_stream = \
         make_datastream(data.train, data.train_ind,
                         p.batch_size,
                         n_labeled=p.labeled_samples,
                         n_unlabeled=p.unlabeled_samples,
                         whiten=whiten,
-                        cnorm=cnorm),
+                        cnorm=cnorm,
+                        scheme=SequentialScheme,
+                        imbalance_unlabeled_data=True)
+    # similar scheme used for unlabeled prediction, necessary because
+    # FilterSources seems not to be able to pass on as_dict?
+
+    output_unlabeled = ladder.act.clean.unlabeled.h[len(ladder.layers) - 1]
+    output_unlabeled.name = 'clean_unlabeled'
+
+    predict_extension = \
+        PredictDataStream(data_stream=train_data_stream,
+                          variables=[output_unlabeled,
+                                     ladder.target_labeled],
+                          path=None,
+                          after_epoch=True,
+                          after_training=False)
+
+    main_loop = MainLoop(
+        training_algorithm,
+        train_data_stream,
+        # Datastream used for training
         model=Model(ladder.costs.total),
         extensions=[
             FinishAfter(after_n_epochs=p.num_epochs),
@@ -499,6 +552,16 @@ def train(cli_params):
             LRDecay(step_rule.learning_rate,
                     p.num_epochs * p.lrate_decay, p.num_epochs,
                     after_epoch=True),
+            predict_extension,
+            RebalanceUnlabeledDataStream(
+                predict_extension=predict_extension,
+                dataset=data.train,
+                i_unlabeled=data.train_ind,
+                target_tensor=[output_unlabeled],
+                batch_size=p.batch_size,
+                cnorm=cnorm,
+                whiten=whiten,
+                after_epoch=True),
         ])
     main_loop.run()
 
