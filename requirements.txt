@@ -1,4 +1,4 @@
 git+https://github.com/Scyfer/fuel@e6f6aa23d464f3bb5090e12ca99c8a0a42e004e8#egg=fuel
 git+https://github.com/mila-udem/blocks.git
-
+git+https://github.com/Scyfer/blocks-extras@c5567f376ae50b5a413971aa9c9b8f6de143ffcc#egg=blocks-extras.git
 pandas == 0.17
