@@ -22,7 +22,7 @@ logger = logging.getLogger('main.model')
 floatX = theano.config.floatX
 
 
-class LadderAE():
+class LadderAE(object):
     def __init__(self, p):
         self.p = p
         self.init_weights_transpose = False
@@ -136,6 +136,7 @@ class LadderAE():
         add_annotation(tag_to, a)
 
     def apply(self, input_labeled, target_labeled, input_unlabeled):
+        self.target_labeled = target_labeled
         self.layer_counter = 0
         input_dim = self.p.encoder_layers[0]
 

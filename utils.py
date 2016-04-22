@@ -1,13 +1,16 @@
+import logging
 import os
 
-import logging
 import numpy as np
 import theano
-from pandas import DataFrame, read_hdf
-
 from blocks.extensions import Printing, SimpleExtension
 from blocks.main_loop import MainLoop
 from blocks.roles import add_role
+from pandas import DataFrame, read_hdf
+
+import fuel.streams
+import fuel.transformers
+from fuel.schemes import BalancedSamplingScheme
 
 logger = logging.getLogger('main.utils')
 
@@ -135,6 +138,76 @@ class SaveLog(SimpleExtension):
         df = self.main_loop.log.to_dataframe()
         df.to_hdf(os.path.join(self.dir, 'log'), 'log', mode='w',
                   complevel=5, complib='blosc')
+
+
+class RebalanceUnlabeledDataStream(SimpleExtension):
+    """
+    A simple extension that rebalances the data_stream for unlabeled data.
+
+    While it is a known fact that class imbalance in a supervised learning
+    task negatively affects the performance of the model (unless
+    countermeasures are taken), it is as of yet unclear how class imbalance
+    in _unlabeled examples_ affects a laddernet's performance.
+      Early experiments on MNIST indicate that while it is not catastrophic to
+    have some class imbalance, it does signifcantly impact the validation
+    performance on labeled data.
+      This SimpleExtension aims to mitigate this by "balancing" the class
+    distribution on every epoch. That is, we use the current state of the
+    network to generate predictions for all unlabeled examples, assume that
+    the resulting predictions are correct, and use simple over- and under-
+    sampling to ensure that the _predicted class_ distribution is balanced.
+
+    Parameters
+    ----------
+    original_data_stream: fuel.streams.DataStream
+        Original datastream.
+    target_tensor: theano.tensor.TensorVariable
+        Tensor that acts as 'target' variable, i.e., we will base our
+        rebalancing step on the contents of this tensor.
+    """
+    def __init__(self, predict_extension, target_tensor,
+                 dataset, i_unlabeled, batch_size, whiten, cnorm, **kwargs):
+        kwargs.setdefault('after_epoch', True)
+        kwargs.setdefault('before_first_epoch', False)
+        super(RebalanceUnlabeledDataStream, self).__init__(**kwargs)
+
+        # filter out unused source
+        self.predict_extension = predict_extension
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.i_unlabeled = i_unlabeled
+        self.whiten = whiten
+        self.cnorm = cnorm
+
+        if isinstance(target_tensor, list):
+            # assume entry 0 is the actual target
+            self.target_tensor = target_tensor[0]
+        else:
+            self.target_tensor = target_tensor
+
+    def do(self, *args, **kwargs):
+        # generate predictions on currently used data_stream
+        predicted_unlabeled_targets = np.argmax(
+            self.predict_extension.predictions[self.target_tensor.name],
+            axis=1)
+
+        print "Class distribution unlabeled predictions: ", \
+            np.sum(self.predict_extension.predictions[self.target_tensor.name],
+                   axis=0)
+
+        balanced_scheme = \
+            BalancedSamplingScheme(targets=predicted_unlabeled_targets,
+                                   examples=self.i_unlabeled,
+                                   batch_size=self.batch_size)
+        from run import Whitening
+        balanced_stream = Whitening(
+            fuel.streams.DataStream(self.dataset),
+            iteration_scheme=balanced_scheme,
+            whiten=self.whiten, cnorm=self.cnorm)
+        balanced_stream.sources = ('features_unlabeled',)
+
+        # TODO we're abusing the fact that main_loop is accessible from here
+        self.main_loop.data_stream.ds_unlabeled = balanced_stream
 
 
 def prepare_dir(save_to, results_dir='results'):
