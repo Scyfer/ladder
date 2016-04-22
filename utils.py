@@ -166,7 +166,9 @@ class RebalanceUnlabeledDataStream(SimpleExtension):
         rebalancing step on the contents of this tensor.
     """
     def __init__(self, predict_extension, target_tensor,
-                 dataset, i_unlabeled, batch_size, whiten, cnorm, **kwargs):
+                 dataset, i_unlabeled, batch_size, whiten, cnorm,
+                 num_samples_per_class,
+                 **kwargs):
         kwargs.setdefault('after_epoch', True)
         kwargs.setdefault('before_first_epoch', False)
         super(RebalanceUnlabeledDataStream, self).__init__(**kwargs)
@@ -178,6 +180,7 @@ class RebalanceUnlabeledDataStream(SimpleExtension):
         self.i_unlabeled = i_unlabeled
         self.whiten = whiten
         self.cnorm = cnorm
+        self.num_samples_per_class = num_samples_per_class
 
         if isinstance(target_tensor, list):
             # assume entry 0 is the actual target
@@ -191,14 +194,18 @@ class RebalanceUnlabeledDataStream(SimpleExtension):
             self.predict_extension.predictions[self.target_tensor.name],
             axis=1)
 
-        print "Class distribution unlabeled predictions: ", \
-            np.sum(self.predict_extension.predictions[self.target_tensor.name],
-                   axis=0)
+        print predicted_unlabeled_targets.shape
 
+        print "Class distribution unlabeled predictions: ", \
+            np.bincount(predicted_unlabeled_targets)
+
+        # TODO we're abusing the fact that main_loop is accessible from here
+        i_unlabeled = self.main_loop.data_stream.i_unlabeled
         balanced_scheme = \
             BalancedSamplingScheme(targets=predicted_unlabeled_targets,
-                                   examples=self.i_unlabeled,
-                                   batch_size=self.batch_size)
+                                   examples=i_unlabeled,
+                                   batch_size=self.batch_size,
+                                   samples_per_class=self.num_samples_per_class)
         from run import Whitening
         balanced_stream = Whitening(
             fuel.streams.DataStream(self.dataset),

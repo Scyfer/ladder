@@ -165,8 +165,10 @@ def make_datastream(dataset, indices, batch_size,
         n_classes = y.max() + 1
 
         n_samples_per_class = {
-            0: 0.25,
-            1: 0.25,
+            0: 0.2,
+            1: 0.2,
+            2: 0.2,
+            3: 0.2,
         }
         n_samples_other_classes = int(math.ceil(
             (1 - sum(n_samples_per_class.values())) /
@@ -181,9 +183,14 @@ def make_datastream(dataset, indices, batch_size,
             else:
                 n_samples = min(n_samples_other_classes,
                                 n_unlabeled - len(i_unlabeled))
-            print "Sampled {} unlabeled for class {}".format(n_samples, c)
             i = (indices[y == c])[:n_samples]
+            print "Sampled  {} ({} desired) unlabeled for class {}".format(
+                len(i), n_samples, c)
             i_unlabeled += list(i)
+
+        if len(i_unlabeled) == n_unlabeled:
+            print "warning: Expected {} unlabeled datapoints, found {}".format(
+                n_unlabeled, len(i_unlabeled))
     else:
         # Get unlabeled indices
         i_unlabeled = indices[:n_unlabeled]
@@ -202,6 +209,8 @@ def make_datastream(dataset, indices, batch_size,
             whiten=whiten, cnorm=cnorm),
     )
     ds.produces_examples = False
+    ds.i_labeled = i_labeled
+    ds.i_unlabeled = i_unlabeled
     return ds
 
 
@@ -493,8 +502,9 @@ def train(cli_params):
     output_unlabeled = ladder.act.clean.unlabeled.h[len(ladder.layers) - 1]
     output_unlabeled.name = 'clean_unlabeled'
 
+    import copy
     predict_extension = \
-        PredictDataStream(data_stream=train_data_stream,
+        PredictDataStream(data_stream=copy.deepcopy(train_data_stream),
                           variables=[output_unlabeled,
                                      ladder.target_labeled],
                           path=None,
@@ -549,19 +559,21 @@ def train(cli_params):
             SaveExpParams(p, p.save_dir, before_training=True),
             SaveLog(p.save_dir, after_training=True),
             ShortPrinting(short_prints),
-            LRDecay(step_rule.learning_rate,
-                    p.num_epochs * p.lrate_decay, p.num_epochs,
-                    after_epoch=True),
-            predict_extension,
-            RebalanceUnlabeledDataStream(
-                predict_extension=predict_extension,
-                dataset=data.train,
-                i_unlabeled=data.train_ind,
-                target_tensor=[output_unlabeled],
-                batch_size=p.batch_size,
-                cnorm=cnorm,
-                whiten=whiten,
-                after_epoch=True),
+            #LRDecay(step_rule.learning_rate,
+            #        p.num_epochs * p.lrate_decay, p.num_epochs,
+            #        after_epoch=True),
+            #predict_extension,
+            #RebalanceUnlabeledDataStream(
+            #    predict_extension=predict_extension,
+            #    dataset=data.train,
+            #    i_unlabeled=data.train_ind,
+            #    target_tensor=[output_unlabeled],
+            #    batch_size=p.batch_size,
+            #    cnorm=cnorm,
+            #    whiten=whiten,
+            #    after_epoch=True,
+            #    num_samples_per_class=p.unlabeled_samples / 10,
+            #)
         ])
     main_loop.run()
 
